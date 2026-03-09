@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:apps-cookbook.dev)",
+      "WebFetch(domain:docs.databricks.com)",
+      "WebFetch(domain:nominatim.org)",
+      "Bash(chmod +x /Users/justin.monaldo/Documents/experimentation/nominatim/scripts/import_with_existing_db.sh)",
+      "Bash(chmod +x /Users/justin.monaldo/Documents/experimentation/nominatim/scripts/refresh_environment.py /Users/justin.monaldo/Documents/experimentation/nominatim/scripts/download_osm_data.py /Users/justin.monaldo/Documents/experimentation/nominatim/scripts/build_nominatim_server.sh)"
+    ]
+  }
+}

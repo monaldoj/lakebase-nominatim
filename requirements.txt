@@ -1,0 +1,33 @@
+# Core dependencies
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic>=2.9.0
+pydantic-settings==2.5.0
+python-dotenv==1.0.0
+
+# Database
+psycopg[binary]
+psycopg-pool
+
+# Databricks
+databricks-sdk
+oauthlib
+
+# Utilities
+greenlet
+requests
+
+# Development dependencies (optional, for local development)
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+httpx==0.25.2
+
+# Code quality
+black==23.12.1
+flake8==6.1.0
+mypy==1.7.1
+
+# Additional tools
+ipython==8.18.1
