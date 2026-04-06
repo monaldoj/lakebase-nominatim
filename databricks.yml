@@ -1,82 +1,54 @@
 bundle:
   name: nominatim-geocoding-api
 
-# Databricks CLI version
-databricks_cli_version: ">=0.213.0"
-
-# Include patterns for deployment
 include:
-  - "*.py"
-  - "requirements.txt"
-  - "README.md"
-  - "API_README.md"
+  - resources/*.yml
 
-# Exclude patterns
-exclude:
-  - "*.pyc"
-  - "__pycache__"
-  - ".env"
-  - "*.log"
-  - "tests/*"
-  - "scripts/*"
-  - "osm_data/*"
-  - ".git/*"
-  - ".claude/*"
+variables:
+  APP_NAME:
+    description: "Databricks App name prefix"
+    default: "nominatim-geocoding-api"
+  PG_PROJECT_ID:
+    description: "Lakebase Postgres project ID"
+    default: "nominatim-lakebase"
+  PG_BRANCH_ID:
+    description: "Lakebase Postgres branch ID"
+    default: "production"
+  PG_MIN_CU:
+    description: "Lakebase autoscaling minimum compute units"
+    default: "0.5"
+  PG_MAX_CU:
+    description: "Lakebase autoscaling maximum compute units"
+    default: "4"
+  PG_USER:
+    description: "Postgres user for Nominatim"
+    default: "justin.monaldo@databricks.com"
+  PG_DATABASE:
+    description: "Postgres database name"
+    default: "nominatim"
+  PG_PORT:
+    description: "Postgres port"
+    default: "5432"
+  PG_SSLMODE:
+    description: "Postgres SSL mode"
+    default: "require"
+  UC_CATALOG:
+    description: "Unity Catalog catalog name for volumes"
+    default: "justinm"
+  UC_SCHEMA:
+    description: "Unity Catalog schema name for volumes"
+    default: "nominatim"
+  OSM_REGIONS:
+    description: "Comma-separated OSM regions to download and import (e.g. monaco, virginia,maryland)"
+    default: "monaco"
 
 targets:
   dev:
     mode: development
-    workspace:
-      host: ${DATABRICKS_HOST}
-      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    default: true
+
+  test:
+    mode: development
 
   prod:
     mode: production
-    workspace:
-      host: ${DATABRICKS_HOST}
-      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
-
-resources:
-  apps:
-    nominatim-api:
-      name: nominatim-geocoding-api-${bundle.target}
-      description: "Nominatim geocoding service - OpenStreetMap-based geocoding with OAuth authentication"
-
-      # Source files to include
-      source_code_path: ${workspace.file_path}
-
-      resources:
-        - name: web-server
-          description: "FastAPI geocoding API server"
-          serving_endpoint_name: nominatim-geocoding-${bundle.target}
-
-      # Command to start the FastAPI server
-      config:
-        command:
-          - "python"
-          - "-m"
-          - "uvicorn"
-          - "app:app"
-          - "--host"
-          - "0.0.0.0"
-          - "--port"
-          - "8080"
-          - "--workers"
-          - "2"
-
-      # Environment variables for OAuth-based authentication
-      env:
-        - name: PGINSTANCENAME
-          value: "instance-9c6e6e14-9e28-4826-bb37-a5c58738022f"
-        - name: PGHOST
-          value: "instance-9c6e6e14-9e28-4826-bb37-a5c58738022f.database.cloud.databricks.com"
-        - name: PGUSER
-          value: "justin.monaldo@databricks.com"
-        - name: PGDATABASE
-          value: "nominatim"
-        - name: PGPORT
-          value: "5432"
-        - name: PGSSLMODE
-          value: "require"
-        # OAuth tokens are generated automatically via databricks-sdk
-        # No need for PGPASSWORD with OAuth authentication

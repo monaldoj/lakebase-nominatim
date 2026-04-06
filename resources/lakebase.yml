@@ -1,0 +1,8 @@
+resources:
+  postgres_projects:
+    nominatim-lakebase:
+      project_id: "${var.PG_PROJECT_ID}"
+      display_name: "nominatim-lakebase"
+      default_endpoint_settings:
+        autoscaling_limit_min_cu: ${var.PG_MIN_CU}
+        autoscaling_limit_max_cu: ${var.PG_MAX_CU}

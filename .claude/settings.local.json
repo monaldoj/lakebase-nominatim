@@ -5,7 +5,16 @@
       "WebFetch(domain:docs.databricks.com)",
       "WebFetch(domain:nominatim.org)",
       "Bash(chmod +x /Users/justin.monaldo/Documents/experimentation/nominatim/scripts/import_with_existing_db.sh)",
-      "Bash(chmod +x /Users/justin.monaldo/Documents/experimentation/nominatim/scripts/refresh_environment.py /Users/justin.monaldo/Documents/experimentation/nominatim/scripts/download_osm_data.py /Users/justin.monaldo/Documents/experimentation/nominatim/scripts/build_nominatim_server.sh)"
+      "Bash(chmod +x /Users/justin.monaldo/Documents/experimentation/nominatim/scripts/refresh_environment.py /Users/justin.monaldo/Documents/experimentation/nominatim/scripts/download_osm_data.py /Users/justin.monaldo/Documents/experimentation/nominatim/scripts/build_nominatim_server.sh)",
+      "WebSearch",
+      "WebFetch(domain:databricks-sdk-py.readthedocs.io)",
+      "Read(//Users/justin.monaldo/miniconda3/envs/nominatim/lib/python3.13/site-packages/databricks/sdk/service/**)",
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:www.databricks.com)",
+      "Read(//Users/justin.monaldo/miniconda3/envs/nominatim/lib/python3.13/site-packages/databricks/sdk/**)",
+      "Read(//Users/justin.monaldo/miniconda3/envs/nominatim/lib/python3.13/site-packages/psycopg/**)",
+      "Read(//Users/justin.monaldo/miniconda3/envs/nominatim/lib/python3.13/site-packages/psycopg_pool/**)",
+      "WebFetch(domain:registry.terraform.io)"
     ]
   }
 }

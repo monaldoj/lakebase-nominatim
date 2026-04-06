@@ -4,200 +4,354 @@ OpenStreetMap-based geocoding service running on Databricks Apps with Lakebase M
 
 ## Features
 
-- **Forward Geocoding**: Convert addresses to coordinates
-- **Reverse Geocoding**: Convert coordinates to addresses
-- **OSM Lookup**: Find places by OpenStreetMap ID
-- **FastAPI**: Modern, async Python API framework
-- **Databricks Apps**: Serverless deployment on Databricks
+- **Forward Geocoding**: Convert addresses/place names to coordinates
+- **Reverse Geocoding**: Convert coordinates to addresses with configurable radius
+- **OSM Lookup**: Find places by OpenStreetMap ID (node, way, or relation)
+- **Structured Addresses**: Every result includes parsed address components (city, state, country, etc.)
+- **Connection Pooling**: psycopg connection pool (2-10 connections) with automatic reconnection
+- **Cached OAuth Tokens**: Lakebase tokens are cached and refreshed automatically 5 minutes before expiry
+- **FastAPI**: Modern Python API with auto-generated Swagger/OpenAPI docs
+- **Databricks Apps**: Serverless deployment with in-workspace authentication
 - **Managed Postgres**: Lakebase managed database with PostGIS
 
-## Quick Start
-
-### Prerequisites
+## Prerequisites
 
 - Python 3.9+
-- Databricks workspace with CLI configured
-- Lakebase Managed Postgres instance
-- `DATABRICKS_HOST` and `DATABRICKS_TOKEN` environment variables set
-### Installation
+- [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) installed and configured
+- A Databricks workspace with Lakebase enabled
+- `DATABRICKS_HOST` set (e.g. `export DATABRICKS_HOST=https://your-workspace.cloud.databricks.com`)
 
-```bash
-# Clone and navigate to project
-cd nominatim
+## Project Structure
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
+```
+nominatim/
+├── databricks.yml                     # Databricks Asset Bundle configuration
+├── resources/
+│   ├── lakebase.yml                   # Lakebase Postgres instance definition
+│   ├── nominatim-geocoding-api.yml    # Databricks App resource + env config
+│   └── nominatim-import-job.yml       # Lakeflow job definition (import pipeline)
+├── app/
+│   ├── app.py                         # FastAPI application (deployed to Databricks Apps)
+│   ├── app.yml                        # Databricks Apps command configuration
+│   └── requirements.txt               # Runtime Python dependencies for the app
+├── job/
+│   ├── 00_setup_catalog.ipynb         # Create UC catalog, schema, and volumes
+│   ├── 00_refresh_environment.ipynb   # Refresh database OAuth token
+│   ├── 01_setup_postgis.ipynb         # Install PostGIS/hstore extensions
+│   ├── 02_download_osm_data.ipynb     # Download OSM data to UC volume
+│   ├── 03_build_nominatim_server.ipynb # Full Nominatim import
+│   ├── 04_resume_failed_indexing.ipynb # Resume interrupted indexing
+│   ├── _helpers.ipynb                 # Shared helper functions
+│   ├── nominatim_init.sh             # Init script for cluster setup
+│   └── OSM_SOURCES.ipynb             # Reference list of OSM data sources
+├── scripts/                           # Local (backup) deployment scripts
+│   ├── 00_refresh_environment.py      # Refresh database OAuth token -> .env
+│   ├── 01_setup_postgis.py            # Install PostGIS/hstore extensions
+│   ├── 02_download_osm_data.py        # Download OSM data files
+│   ├── 03_build_nominatim_server.sh   # Import OSM data and build Nominatim DB
+│   ├── 04_resume_failed_indexing.sh   # Resume interrupted indexing
+│   ├── geocode.py                     # CLI geocoding client (hits API endpoints)
+│   └── query_nominatim_db.py          # Direct database query tool (bypasses API)
+├── tests/
+│   └── test_api.py                    # API tests
+├── requirements.txt                   # Development Python dependencies
+├── .env.template                      # Environment variable template
+└── .gitignore
 ```
 
-### Configure Environment
+---
 
-Create a `.env` file in the project root:
+## Deploying with Databricks Asset Bundles (DAB)
 
-```env
-# Databricks (set in shell, not .env)
-# DATABRICKS_HOST=https://your-workspace.cloud.databricks.com
-# DATABRICKS_TOKEN=your-databricks-token
+This is the primary deployment method. The bundle deploys three resources:
 
-# Database Instance
-PGINSTANCENAME=your-instance-id
+1. **Lakebase Postgres instance** (`resources/lakebase.yml`) -- the managed PostGIS database
+2. **Databricks App** (`resources/nominatim-geocoding-api.yml`) -- the FastAPI geocoding service
+3. **Lakeflow Import Job** (`resources/nominatim-import-job.yml`) -- orchestrated pipeline that sets up PostGIS, downloads OSM data, and runs the Nominatim import
 
-# Database Connection (PGPASSWORD auto-updated by script)
-PGHOST=your-instance.database.cloud.databricks.com
-PGUSER=your.email@company.com
-PGPASSWORD=<auto-refreshed>
-PGDATABASE=nominatim
-PGPORT=5432
-PGSSLMODE=require
-
-# Nominatim
-NOMINATIM_SCHEMA=public
-NOMINATIM_URL=http://localhost:8000
-```
-
-## Setup Workflow
-
-Run these scripts **in order** to build your Nominatim geocoding server:
-
-### Step 1: Refresh Database Token
+### 1. Validate the bundle
 
 ```bash
-python scripts/00_refresh_environment.py
+# Validate against the default target (dev)
+databricks bundle validate
+
+# Validate against a specific target
+databricks bundle validate -t dev
+databricks bundle validate -t test
+databricks bundle validate -t prod
 ```
 
-- Fetches a fresh OAuth token from Databricks
-- Updates `PGPASSWORD` in your `.env` file
-- Token is valid for 1 hour
-
-**Note**: Run this whenever you get authentication errors (token expires after 1 hour).
-
-### Step 2: Setup PostGIS Extensions
+### 2. Deploy
 
 ```bash
-python scripts/01_setup_postgis.py
+# Deploy to dev (default target)
+databricks bundle deploy
+
+# Deploy to a specific target
+databricks bundle deploy -t dev
+databricks bundle deploy -t test
+databricks bundle deploy -t prod
 ```
 
-- Installs PostGIS and hstore extensions on your Postgres instance
-- Verifies extensions are working correctly
+### 3. Grant the App Service Principal access to Lakebase
 
-### Step 3: Download OSM Data
+After the first deploy, the Databricks App gets its own Service Principal (SP). That SP needs permissions on the Lakebase Postgres project before the app can connect. This is a one-time manual step performed in the Databricks UI:
+
+1. Navigate to your Lakebase project in the workspace (SQL Editor sidebar or Catalog Explorer).
+2. Click **Branches** and select the branch name (default: **production**).
+3. Click **Roles & Databases**.
+4. Find the Service Principal role that was created for your app (it will match the app name).
+5. Click **Edit Role** next to it.
+6. Add the required permissions (at minimum, grant access to the `nominatim` database).
+7. Save.
+
+Without this step the app will fail with authentication/authorization errors when trying to query the database.
+
+### 4. Run the OSM import job
+
+The import job orchestrates the full pipeline: catalog setup, PostGIS extensions, OSM data download, and Nominatim import.
 
 ```bash
-# Small test region (Monaco ~2MB, ~5-10 min import)
-python scripts/02_download_osm_data.py --region monaco
+# Run with the default region (monaco)
+databricks bundle run nominatim-import -t dev
 
-# Other small regions
-python scripts/02_download_osm_data.py --region liechtenstein
-
-# US states
-python scripts/02_download_osm_data.py --region california
-python scripts/02_download_osm_data.py --region virginia
-python scripts/02_download_osm_data.py --region new-york
-python scripts/02_download_osm_data.py --region texas
-
-# Countries (large files, longer import times)
-python scripts/02_download_osm_data.py --region germany
-python scripts/02_download_osm_data.py --region france
-python scripts/02_download_osm_data.py --region usa
-
-# Custom URL
-python scripts/02_download_osm_data.py --url https://download.geofabrik.de/europe/switzerland-latest.osm.pbf
+# Override regions at runtime
+databricks bundle run nominatim-import -t dev --var "OSM_REGIONS=virginia,maryland"
 ```
 
-Downloads to `osm_data/` directory by default. Use `--region` and `--url` multiple times to download several files at once:
+### 5. Monitor
 
 ```bash
-# Download multiple regions in one command
-python scripts/02_download_osm_data.py --region virginia --region maryland
+# View app status
+databricks apps get nominatim-geocoding-api-dev
+
+# Get the app URL
+databricks apps get nominatim-geocoding-api-dev --json | jq -r '.url'
+
+# View app logs
+databricks apps logs nominatim-geocoding-api-dev
+databricks apps logs nominatim-geocoding-api-dev --follow
+
+# List active job runs
+databricks jobs list-runs --active-only true
 ```
 
-### Step 4: Build Nominatim Server
+### 6. Tear down
 
 ```bash
-# Import a single file
-bash scripts/03_build_nominatim_server.sh osm_data/monaco-latest.osm.pbf
-
-# Import multiple files in one build
-bash scripts/03_build_nominatim_server.sh osm_data/virginia-latest.osm.pbf osm_data/maryland-latest.osm.pbf
-
-# With more threads (faster)
-bash scripts/03_build_nominatim_server.sh osm_data/monaco-latest.osm.pbf --threads 4
-
-# Database is always recreated clean automatically on each import run
-bash scripts/03_build_nominatim_server.sh osm_data/monaco-latest.osm.pbf
+databricks bundle destroy -t dev
 ```
 
-This script:
-- Creates the `nominatim` database if needed
-- Imports OSM data
-- Sets up all Nominatim tables and indexes
-- Creates `nominatim_project/` directory with configuration
-- Automatically enables import-optimized PostgreSQL user settings, then restores normal settings on exit
+### Bundle variables
 
-**Import Times**:
-- Monaco: ~5-10 minutes
-- US State: ~30-60 minutes
-- Country: 1-4 hours
+Variables can be overridden at deploy or run time with `--var "KEY=value"`:
 
-## Testing Locally
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APP_NAME` | `nominatim-geocoding-api` | Databricks App name prefix |
+| `PG_PROJECT_ID` | `nominatim-lakebase` | Lakebase Postgres project ID |
+| `PG_BRANCH_ID` | `production` | Lakebase branch |
+| `PG_MIN_CU` | `0.5` | Autoscaling minimum compute units |
+| `PG_MAX_CU` | `4` | Autoscaling maximum compute units |
+| `PG_USER` | `justin.monaldo@databricks.com` | Postgres user |
+| `PG_DATABASE` | `nominatim` | Database name |
+| `OSM_REGIONS` | `monaco` | Comma-separated regions to import |
+| `UC_CATALOG` | `justinm` | Unity Catalog catalog for volumes |
+| `UC_SCHEMA` | `nominatim` | Unity Catalog schema for volumes |
 
-### Start the API Server
+### Available targets
 
-```bash
-# Using Python directly
-python app.py
+| Target | Mode | Description |
+|--------|------|-------------|
+| `dev` | development | Default target for development |
+| `test` | development | Testing environment |
+| `prod` | production | Production deployment |
 
-# Or using uvicorn with auto-reload
-uvicorn app:app --reload
+---
 
-# Or using make
-make local
-make local-reload  # with auto-reload
-```
+## Testing the Deployed API
 
-Visit http://localhost:8000/docs for interactive API documentation.
+The deployed app is protected by Databricks workspace authentication. You need an OAuth token to call the endpoints.
 
-### Quick Query After `app.py`
-
-If you started with `python app.py`, run a query from a second terminal:
-
-```bash
-curl "http://localhost:8000/search?q=Tehran&limit=3"
-```
-
-### Test with Geocoding Script
+### Get an OAuth token
 
 ```bash
-# Forward geocoding (address → coordinates)
-python scripts/geocode.py --search "1600 Amphitheatre Parkway, Mountain View, CA"
-python scripts/geocode.py --search "Eiffel Tower, Paris"
-
-# Reverse geocoding (coordinates → address)
-python scripts/geocode.py --reverse 37.4224764 -122.0842499
-
-# With options
-python scripts/geocode.py --search "Paris" --limit 3
-python scripts/geocode.py --search "Springfield" --country us
-python scripts/geocode.py --reverse 48.8584 2.2945 --zoom 10
-
-# Output JSON
-python scripts/geocode.py --search "Monaco" --json
-
-# Custom server URL
-python scripts/geocode.py --search "Berlin" --url http://localhost:8000
+export DATABRICKS_HOST="https://your-workspace.cloud.databricks.com"
+export OAUTH_TOKEN=$(databricks auth token --host $DATABRICKS_HOST | jq -r '.access_token')
 ```
 
 ### Test with curl
 
 ```bash
 # Health check
-curl http://localhost:8000/health
+curl -s \
+    -H "Authorization: Bearer $OAUTH_TOKEN" \
+    "https://nominatim-geocoding-api-1444828305810485.aws.databricksapps.com/api/health" | jq .
 
-# Status
-curl http://localhost:8000/status
+# Forward geocoding
+curl -s \
+    -H "Authorization: Bearer $OAUTH_TOKEN" \
+    "https://nominatim-geocoding-api-1444828305810485.aws.databricksapps.com/api/search?q=Alexandria" | jq .
+
+# Reverse geocoding
+curl -s \
+    -H "Authorization: Bearer $OAUTH_TOKEN" \
+    "https://nominatim-geocoding-api-1444828305810485.aws.databricksapps.com/api/reverse?lat=38.8048&lon=-77.0469" | jq .
+
+# OSM ID lookup
+curl -s \
+    -H "Authorization: Bearer $OAUTH_TOKEN" \
+    "https://nominatim-geocoding-api-1444828305810485.aws.databricksapps.com/api/lookup?osm_ids=R146656,W5013364" | jq .
+```
+
+### Query from Python with a Service Principal
+
+For automated or production access, use a Databricks Service Principal's `client_id` and `client_secret` to obtain an OAuth token, then call the API:
+
+```python
+import requests
+
+# --- Configuration ---
+DATABRICKS_HOST = "https://your-workspace.cloud.databricks.com"
+APP_URL = "https://nominatim-geocoding-api-1444828305810485.aws.databricksapps.com"
+CLIENT_ID = "your-service-principal-client-id"
+CLIENT_SECRET = "your-service-principal-client-secret"
+
+# --- Get OAuth token via client credentials flow ---
+token_response = requests.post(
+    f"{DATABRICKS_HOST}/oidc/v1/token",
+    data={
+        "grant_type": "client_credentials",
+        "scope": "all-apis",
+    },
+    auth=(CLIENT_ID, CLIENT_SECRET),
+)
+token_response.raise_for_status()
+access_token = token_response.json()["access_token"]
+
+headers = {"Authorization": f"Bearer {access_token}"}
+
+# --- Health check ---
+resp = requests.get(f"{APP_URL}/api/health", headers=headers)
+print("Health:", resp.json())
+
+# --- Forward geocoding ---
+resp = requests.get(
+    f"{APP_URL}/api/search",
+    params={"q": "Alexandria", "limit": 3},
+    headers=headers,
+)
+print("Search results:", resp.json())
+
+# --- Reverse geocoding ---
+resp = requests.get(
+    f"{APP_URL}/api/reverse",
+    params={"lat": 38.8048, "lon": -77.0469},
+    headers=headers,
+)
+print("Reverse results:", resp.json())
+
+# --- OSM lookup ---
+resp = requests.get(
+    f"{APP_URL}/api/lookup",
+    params={"osm_ids": "R146656,W5013364"},
+    headers=headers,
+)
+print("Lookup results:", resp.json())
+```
+
+---
+
+## Local Deployment (Backup Method)
+
+Use the scripts in `scripts/` when you want to run everything from your local machine and directly control each step.
+
+### Setup
+
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Copy and fill in environment variables
+cp .env.template .env
+# Edit .env with your values
+```
+
+### Build the Nominatim database
+
+Run these scripts in order:
+
+**Step 1: Refresh database token**
+
+```bash
+python scripts/00_refresh_environment.py
+```
+
+Fetches a fresh OAuth token from Databricks and updates `PGPASSWORD` in `.env`. Tokens expire after 1 hour -- re-run whenever you get auth errors.
+
+**Step 2: Setup PostGIS extensions**
+
+```bash
+python scripts/01_setup_postgis.py
+```
+
+**Step 3: Download OSM data**
+
+```bash
+# Small test region (~2MB, ~5-10 min import)
+python scripts/02_download_osm_data.py --region monaco
+
+# US states
+python scripts/02_download_osm_data.py --region virginia --region maryland
+
+# Custom URL
+python scripts/02_download_osm_data.py --url https://download.geofabrik.de/europe/switzerland-latest.osm.pbf
+```
+
+**Step 4: Build Nominatim server**
+
+```bash
+# Import a single file
+bash scripts/03_build_nominatim_server.sh osm_data/monaco-latest.osm.pbf
+
+# Import multiple files
+bash scripts/03_build_nominatim_server.sh osm_data/virginia-latest.osm.pbf osm_data/maryland-latest.osm.pbf
+
+# With more threads
+bash scripts/03_build_nominatim_server.sh osm_data/monaco-latest.osm.pbf --threads 4
+```
+
+**Import times** (approximate):
+- Monaco: ~5-10 minutes
+- US State: ~30-60 minutes
+- Country: 1-4 hours
+
+**Resume failed indexing** (if import was interrupted):
+
+```bash
+bash scripts/04_resume_failed_indexing.sh
+bash scripts/04_resume_failed_indexing.sh --threads 4
+```
+
+### Run the API locally
+
+```bash
+python app/app.py
+# or with auto-reload:
+uvicorn app.app:app --reload
+```
+
+Visit http://localhost:8000/docs for interactive Swagger documentation.
+
+### Test locally
+
+```bash
+# Health check
+curl http://localhost:8000/health
 
 # Forward geocoding
 curl "http://localhost:8000/search?q=Berlin,+Germany&limit=1"
@@ -205,304 +359,129 @@ curl "http://localhost:8000/search?q=Berlin,+Germany&limit=1"
 # Reverse geocoding
 curl "http://localhost:8000/reverse?lat=52.5200&lon=13.4050"
 
-# OSM Lookup
-curl "http://localhost:8000/lookup?osm_ids=R146656"
+# OSM ID lookup
+curl "http://localhost:8000/lookup?osm_ids=R146656,W5013364"
 ```
 
-## Deployment to Databricks
+---
 
-### Using Makefile (Recommended)
+## API Reference
 
-```bash
-# Show all commands
-make help
-
-# Deploy to development
-make deploy-dev
-
-# View logs
-make logs-dev
-make logs-dev-follow  # follow logs
-
-# Check status
-make status-dev
-
-# Check health
-make health-dev
-
-# Build/rebuild Nominatim database from OSM files
-make build-import OSM_FILES="osm_data/monaco-latest.osm.pbf"
-
-# Resume failed indexing after interrupted import
-make resume-index
-
-# Quick local query (after app.py/make local is running)
-make local-query Q=Tehran
-
-# Deploy to production
-make deploy-prod
-
-# Full dev workflow (validate, deploy, follow logs)
-make dev
-```
-
-### Using Databricks CLI
-
-```bash
-# Validate bundle
-databricks bundle validate
-
-# Deploy to dev
-databricks bundle deploy -t dev
-
-# Deploy to production
-databricks bundle deploy -t prod
-
-# View logs
-databricks apps logs nominatim-geocoding-api-dev
-databricks apps logs nominatim-geocoding-api-dev --follow
-
-# Check status
-databricks apps get nominatim-geocoding-api-dev
-
-# List apps
-databricks apps list
-
-# Destroy deployment
-databricks bundle destroy -t dev
-```
-
-### Get App URL
-
-```bash
-# Using databricks CLI
-databricks apps get nominatim-geocoding-api-dev
-
-# Or extract just the URL
-databricks apps get nominatim-geocoding-api-dev --json | jq -r '.url'
-```
-
-## API Endpoints
+Base URL: `http://localhost:8000` (local) or your Databricks App URL.
+Interactive docs at `/docs` (Swagger) and `/redoc` (ReDoc).
+All geocoding endpoints are also available under `/api/*` (e.g. `/api/search`, `/api/reverse`).
 
 ### `GET /health`
-Simple health check (returns 200 OK).
+
+Lightweight health check. Returns pool and token stats.
+
+```json
+{
+  "status": "healthy",
+  "database": "connected",
+  "pool_size": 2,
+  "token_ttl_s": 3241
+}
+```
 
 ### `GET /status`
-Database status and version information.
 
-### `GET /search` - Forward Geocoding
-Convert address to coordinates.
+Detailed status with data freshness and indexed place count.
 
-**Parameters**:
-- `q` (required): Search query
-- `limit` (optional, default=10): Max results (1-50)
-- `countrycodes` (optional): Comma-separated country codes (e.g., "us,ca")
-
-**Example**:
-```bash
-curl "https://your-app-url/search?q=Berlin,+Germany&limit=1"
+```json
+{
+  "status": "ok",
+  "version": "2.0.0",
+  "database": "connected",
+  "data_updated": "2025-03-09 08:00:00+00:00",
+  "place_count": 1284503
+}
 ```
 
-### `GET /reverse` - Reverse Geocoding
-Convert coordinates to address.
+### `GET /search`
 
-**Parameters**:
-- `lat` (required): Latitude (-90 to 90)
-- `lon` (required): Longitude (-180 to 180)
-- `zoom` (optional, default=18): Detail level (0=country, 18=building)
+Forward geocoding: address/place name to coordinates.
 
-**Example**:
-```bash
-curl "https://your-app-url/reverse?lat=52.5200&lon=13.4050"
-```
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `q` | yes | -- | Place name or address |
+| `limit` | no | `10` | Max results (1-50) |
+| `countrycodes` | no | -- | ISO 3166-1 alpha-2 codes (e.g. `us,ca`) |
 
-### `GET /lookup` - OSM Lookup
+### `GET /reverse`
+
+Reverse geocoding: coordinates to place name.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `lat` | yes | -- | Latitude (-90 to 90) |
+| `lon` | yes | -- | Longitude (-180 to 180) |
+| `radius` | no | `1000` | Search radius in metres (1-50000) |
+| `limit` | no | `1` | Number of results (1-10) |
+
+### `GET /lookup`
+
 Look up places by OpenStreetMap ID.
 
-**Parameters**:
-- `osm_ids` (required): Comma-separated OSM IDs (e.g., "R146656,N240109189")
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `osm_ids` | yes | -- | Comma-separated IDs prefixed with `N`/`W`/`R` (e.g. `R146656,W5013364`) |
 
-**Example**:
-```bash
-curl "https://your-app-url/lookup?osm_ids=R146656"
-```
+### Error responses
 
-## Project Structure
+| HTTP Code | Meaning |
+|-----------|---------|
+| `400` | Bad request (e.g. invalid OSM IDs) |
+| `404` | No results found |
+| `500` | Internal server error |
+| `503` | Database unavailable (token expired, connection lost -- will auto-recover) |
 
-```
-nominatim/
-├── app.py                          # FastAPI application
-├── requirements.txt                # Python dependencies
-├── databricks.yml                  # Databricks bundle configuration
-├── Makefile                        # Deployment commands
-├── README.md                       # This file
-├── .env                            # Environment variables (not in git)
-├── .env.template                   # Environment template
-├── scripts/
-│   ├── 00_refresh_environment.py   # Refresh database OAuth token
-│   ├── 01_setup_postgis.py         # Install PostGIS extensions
-│   ├── 02_download_osm_data.py     # Download OSM data files
-│   ├── 03_build_nominatim_server.sh # Import OSM data and build Nominatim
-│   ├── 04_resume_failed_indexing.sh # Resume interrupted indexing safely
-│   ├── geocode.py                  # CLI geocoding tool
-│   └── query_nominatim_db.py       # Direct database query tool
-├── osm_data/                       # Downloaded OSM files
-├── nominatim_project/              # Nominatim working directory (created by script)
-└── tests/                          # Tests
-```
+---
 
 ## Troubleshooting
 
-### Token Expired Errors
+### Token expired
 
-**Symptom**: Authentication failures, "invalid credentials" errors
-
-**Solution**: OAuth tokens expire after 1 hour. Refresh it:
+OAuth tokens expire after 1 hour. Refresh:
 ```bash
 python scripts/00_refresh_environment.py
 ```
 
-### PostGIS Not Found
+### PostGIS not found
 
-**Symptom**: "extension postgis does not exist"
-
-**Solution**: Run the PostGIS setup script:
 ```bash
 python scripts/01_setup_postgis.py
 ```
 
-### Import Takes Too Long
+### Import takes too long
 
-**Solutions**:
-- Start with a smaller region (Monaco) for testing
-- Increase threads: `bash scripts/03_build_nominatim_server.sh osm_data/monaco-latest.osm.pbf --threads 4`
-- Use import-optimized PostgreSQL user settings automatically via the build script
-- Use a more powerful database instance
+- Start with Monaco for testing
+- Increase threads: `--threads 4`
+- Use a larger Lakebase compute tier (`PG_MAX_CU`)
 
-### Resume Failed Indexing
+### No results for valid addresses
 
-If import was interrupted during indexing (for example after rank 30), resume without rebuilding:
-
-```bash
-# Default retry-friendly setting
-bash scripts/04_resume_failed_indexing.sh
-
-# Or set threads explicitly
-bash scripts/04_resume_failed_indexing.sh --threads 4
-```
-
-### No Results for Valid Addresses
-
-**Possible causes**:
-- Address is outside the imported region
+- Address may be outside the imported region
 - Try broader search terms
-- Check country codes match imported data
+- Check `countrycodes` matches imported data
 
-### API Returns 500 Errors
+### Database connection fails
 
-**Debugging steps**:
-```bash
-# Check logs
-make logs-dev
-databricks apps logs nominatim-geocoding-api-dev
-
-# Verify database connection
-python scripts/query_nominatim_db.py
-
-# Test locally first
-python app.py
-```
-
-### Database Connection Fails
-
-**Debugging steps**:
-1. Check `.env` file has correct values
+1. Verify `.env` has correct values
 2. Refresh token: `python scripts/00_refresh_environment.py`
-3. Verify instance is running in Databricks console
-4. Check `PGHOST` and `PGINSTANCENAME` match
+3. Confirm the Lakebase instance is running in the Databricks console
+4. Check `PGHOST` and `PG_PROJECT_ID` match
 
-## Development
-
-### Run Tests
-
-```bash
-# Run all tests
-pytest tests/
-
-# With coverage
-pytest tests/ --cov
-
-# Using make
-make test
-```
-
-### Code Quality
-
-```bash
-# Format code
-black .
-
-# Lint
-flake8 .
-
-# Type checking
-mypy app.py
-```
-
-### Clean Cache
-
-```bash
-make clean
-```
-
-## Performance Tuning
-
-### Database
-
-- **Indexes**: Automatically created by Nominatim import
-- **Connection Pooling**: Implemented in `app.py`
-- **Query Optimization**: Use appropriate zoom levels for reverse geocoding
-
-### API
-
-- **Caching**: Consider adding Redis for frequently requested locations
-- **Rate Limiting**: Add middleware for production use
-- **Monitoring**: Use Databricks monitoring and logging
-
-### Scaling
-
-- **API Layer**: Databricks Apps auto-scales
-- **Database**: May need vertical scaling for large datasets
-- **Regional Data**: Import only necessary regions to reduce size
-
-## Data Updates
-
-OSM data changes frequently. To update:
-
-```bash
-# Re-download latest data
-python scripts/02_download_osm_data.py --region monaco
-
-# Re-import (always cleans and rebuilds)
-bash scripts/03_build_nominatim_server.sh osm_data/monaco-latest.osm.pbf
-```
+---
 
 ## Resources
 
 - [Nominatim Documentation](https://nominatim.org/release-docs/latest/)
 - [Databricks Apps Documentation](https://docs.databricks.com/apps/)
+- [Databricks Asset Bundles](https://docs.databricks.com/dev-tools/bundles/)
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
 - [Geofabrik OSM Downloads](https://download.geofabrik.de/)
-- [PostGIS Documentation](https://postgis.net/documentation/)
 
 ## License
 
 This project uses Nominatim, which is licensed under GPL v2.
-
-## Support
-
-For issues:
-1. Check the [Troubleshooting](#troubleshooting) section
-2. Review app logs: `make logs-dev`
-3. Validate configuration: `databricks bundle validate`
-4. Test locally first: `make local`

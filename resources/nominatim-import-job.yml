@@ -1,0 +1,97 @@
+resources:
+  jobs:
+    nominatim-import:
+      name: "nominatim-osm-import"
+      description: >-
+        Set up PostGIS extensions, download OSM data, and run the full
+        Nominatim import against the Lakebase Postgres project.
+
+      # Single-node cluster -- nominatim import is a driver-only workload
+      job_clusters:
+        - job_cluster_key: nominatim-import-cluster
+          new_cluster:
+            spark_version: "17.3.x-scala2.13"
+            num_workers: 0
+            node_type_id: "m5d.2xlarge"
+            aws_attributes:
+              availability: "ON_DEMAND"
+            data_security_mode: "USER_ISOLATION"
+            spark_conf:
+              "spark.master": "local[*]"
+              "spark.databricks.cluster.profile": "singleNode"
+            custom_tags:
+              "ResourceClass": "SingleNode"
+            init_scripts:
+              - volumes:
+                  destination: "/Volumes/${var.UC_CATALOG}/${var.UC_SCHEMA}/init/nominatim_init.sh"
+
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
+
+      tasks:
+        # ---- Task 0: Create catalog, schema, volumes & copy init script ------
+        # Runs on serverless so volumes + init script exist before the
+        # job cluster starts (which needs the init script in the volume).
+        - task_key: setup_catalog
+          environment_key: serverless
+          notebook_task:
+            notebook_path: ../job/00_setup_catalog.ipynb
+            base_parameters:
+              catalog: "${var.UC_CATALOG}"
+              schema: "${var.UC_SCHEMA}"
+            source: WORKSPACE
+
+        # ---- Task 1: Install PostGIS + hstore, create www-data role ----------
+        - task_key: setup_postgis
+          depends_on:
+            - task_key: setup_catalog
+          environment_key: serverless
+          # job_cluster_key: nominatim-import-cluster
+          notebook_task:
+            notebook_path: ../job/01_setup_postgis.ipynb
+            base_parameters:
+              pg_project_id: "${var.PG_PROJECT_ID}"
+              pg_branch_id: "${var.PG_BRANCH_ID}"
+              pg_user: "${var.PG_USER}"
+              pg_database: "${var.PG_DATABASE}"
+              pg_port: "${var.PG_PORT}"
+            source: WORKSPACE
+
+        # ---- Task 2: Download OSM .pbf files to volume -----------------------
+        - task_key: download_osm_data
+          depends_on:
+            - task_key: setup_catalog
+          environment_key: serverless
+          # job_cluster_key: nominatim-import-cluster
+          notebook_task:
+            notebook_path: ../job/02_download_osm_data.ipynb
+            base_parameters:
+              regions: "${var.OSM_REGIONS}"
+              output_dir: "/Volumes/${var.UC_CATALOG}/${var.UC_SCHEMA}/osm_data"
+            source: WORKSPACE
+
+        # ---- Task 3: Full Nominatim import (longest step) --------------------
+        - task_key: build_nominatim
+          depends_on:
+            - task_key: setup_postgis
+            - task_key: download_osm_data
+          job_cluster_key: nominatim-import-cluster
+          notebook_task:
+            notebook_path: ../job/03_build_nominatim_server.ipynb
+            base_parameters:
+              pg_project_id: "${var.PG_PROJECT_ID}"
+              pg_branch_id: "${var.PG_BRANCH_ID}"
+              pg_user: "${var.PG_USER}"
+              pg_database: "${var.PG_DATABASE}"
+              pg_port: "${var.PG_PORT}"
+              osm_data_dir: "/Volumes/${var.UC_CATALOG}/${var.UC_SCHEMA}/osm_data"
+              regions: "${var.OSM_REGIONS}"
+              import_threads: "0"
+              cache_mb: "0"
+              token_refresh_seconds: "2700"
+              import_retry_max: "2"
+            source: WORKSPACE
+          # Large imports can take hours; default timeout is too short
+          timeout_seconds: 86400

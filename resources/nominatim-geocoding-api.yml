@@ -1,0 +1,17 @@
+resources:
+  apps:
+    nominatim-api:
+      name: "${var.APP_NAME}"
+      source_code_path: ../app
+      description: "Nominatim geocoding service - OpenStreetMap geocoding on Databricks Apps."
+      resources:
+        - name: postgres
+          description: "Lakebase autoscaling database resource for Nominatim."
+          database:
+            instance_name: "${var.PG_PROJECT_ID}"
+            database_name: "${var.PG_DATABASE}"
+            permission: "CAN_CONNECT_AND_CREATE"
+      config:
+        env:
+          - name: APP_DATABASE_RESOURCE
+            value_from: postgres
